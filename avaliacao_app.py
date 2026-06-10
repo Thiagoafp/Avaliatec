@@ -386,15 +386,15 @@ def tela_inicial():
                     st.error("Informe a senha.")
                     return
 
-                # Sem provas: qualquer senha padrão entra
+                # Sem provas: usa senha dos secrets ou padrão
                 if prova_id_sel == -1:
-                    senha_correta = "senai123"
+                    senha_correta = _senha_professor_padrao()
                 else:
                     prova = db.get_prova(prova_id_sel)
-                    senha_correta = prova['senha_professor'] if prova else "senai123"
+                    senha_correta = prova['senha_professor'] if prova else _senha_professor_padrao()
 
                 if senha != senha_correta:
-                    st.error("❌ Senha incorreta. (padrão: senai123)")
+                    st.error("❌ Senha incorreta.")
                     return
 
                 st.session_state['perfil'] = 'professor'
@@ -402,7 +402,12 @@ def tela_inicial():
                 st.rerun()
 
 
-# ─── PAINEL PROFESSOR ─────────────────────────────────────────────────────────
+def _senha_professor_padrao() -> str:
+    """Retorna senha padrão — dos secrets em produção, senai123 em dev."""
+    try:
+        return st.secrets["app"]["senha_professor"]
+    except Exception:
+        return "senai123"
 
 def painel_professor():
     prova_id = st.session_state.get('prova_id', -1)
@@ -884,7 +889,7 @@ def _professor_nova_prova():
             tempo = st.number_input("Tempo (minutos)*", min_value=10,
                                     max_value=240, value=60, step=5)
         with col2:
-            senha = st.text_input("Senha do professor*", value="senai123")
+            senha = st.text_input("Senha do professor*", value=_senha_professor_padrao())
         descricao = st.text_area("Descrição / Observações", placeholder="Opcional")
         submitted = st.form_submit_button("✅ Criar e ir para Configuração",
                                           type="primary", use_container_width=True)
@@ -950,7 +955,7 @@ def _importar_questoes(prova_id, arquivo, arquivo_gabarito=None):
             tempo = st.number_input("Tempo (minutos)*", min_value=10,
                                     max_value=240, value=60, step=5)
         with col2:
-            senha = st.text_input("Senha do professor*", value="senai123")
+            senha = st.text_input("Senha do professor*", value=_senha_professor_padrao())
         descricao = st.text_area("Descrição / Observações", placeholder="Opcional")
         submitted = st.form_submit_button("✅ Criar e ir para Configuração",
                                           type="primary", use_container_width=True)
@@ -1504,21 +1509,61 @@ def _sala_espera(nome_aluno, prova):
 
 
 def _aguardar_nota(nome_aluno, prova_id):
-    st.markdown(f"## ✅ Prova enviada!")
-    st.success(f"Olá **{nome_aluno}**, sua prova foi entregue com sucesso.")
-    st.info("Aguarde o professor liberar sua nota...")
-
     prova = db.get_prova(prova_id)
     sessao = db.get_sessao_por_aluno(prova_id, nome_aluno)
 
+    # Nota já liberada — vai para resultado
     if sessao and sessao['status'] == 'nota_liberada':
         st.rerun()
+        return
 
-    if prova['status'] == 'notas_liberadas':
-        if sessao:
-            db.liberar_nota_aluno(sessao['id'], sessao['nota_final'])
-        st.rerun()
+    # Mensagem de conclusão
+    st.markdown(f"## ✅ Prova entregue, **{nome_aluno.split()[0].capitalize()}**!")
+    st.success("Suas respostas foram salvas com sucesso. "
+               "Aguarde o professor liberar o resultado.")
 
+    # Jogo de espera se houver
+    jogo_raw = prova.get('jogo_espera', 'none') or 'none'
+    try:
+        jogos_lista = json.loads(jogo_raw) if jogo_raw.startswith('[') else (
+            [] if jogo_raw == 'none' else [jogo_raw])
+    except Exception:
+        jogos_lista = []
+    jogos_lista = [j for j in jogos_lista if j in JOGOS_DISPONIVEIS]
+
+    if not jogos_lista:
+        st.markdown("""
+        <div style="text-align:center; padding:60px 20px; color:#888;">
+            <div style="font-size:3rem">☕</div>
+            <div style="font-size:1rem; margin-top:12px;">
+                Relaxe enquanto aguarda a nota.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    elif len(jogos_lista) == 1:
+        st.markdown(f"### {JOGOS_DISPONIVEIS[jogos_lista[0]]} 🎮")
+        st.caption("Jogue enquanto aguarda — sua nota aparecerá automaticamente.")
+        render_jogo(jogos_lista[0], nome_aluno, altura=500)
+    else:
+        st.markdown("### 🎮 Jogue enquanto aguarda sua nota:")
+        jogo_key = f'jogo_nota_{nome_aluno}'
+        if jogo_key not in st.session_state:
+            st.session_state[jogo_key] = jogos_lista[0]
+        cols = st.columns(len(jogos_lista))
+        for ci, jkey in enumerate(jogos_lista):
+            selecionado = st.session_state[jogo_key] == jkey
+            with cols[ci]:
+                if st.button(
+                    f"{'▶️ ' if selecionado else ''}{JOGOS_DISPONIVEIS[jkey]}",
+                    key=f"nota_jogo_{jkey}",
+                    use_container_width=True,
+                    type="primary" if selecionado else "secondary"
+                ):
+                    st.session_state[jogo_key] = jkey
+                    st.rerun()
+        render_jogo(st.session_state[jogo_key], nome_aluno, altura=500)
+
+    # Verifica a cada 4s se nota foi liberada
     time.sleep(4)
     st.rerun()
 
