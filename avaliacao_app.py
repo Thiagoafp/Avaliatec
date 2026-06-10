@@ -2168,10 +2168,11 @@ def _professor_exportar():
 def _injetar_localStorage_escritor(nome_aluno: str, prova_id: int):
     """Salva sessão no localStorage do browser para recuperação após queda."""
     import streamlit.components.v1 as _c
+    nome_escaped = nome_aluno.replace("'", "\\'")
     _c.html(f"""
     <script>
     try {{
-        localStorage.setItem('senai_aval_nome', '{nome_aluno.replace("'", "\\'")}');
+        localStorage.setItem('senai_aval_nome', '{nome_escaped}');
         localStorage.setItem('senai_aval_prova', '{prova_id}');
         localStorage.setItem('senai_aval_ts', Date.now().toString());
     }} catch(e) {{}}
