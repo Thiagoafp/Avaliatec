@@ -1425,14 +1425,6 @@ def tela_aluno():
 
 def _sala_espera(nome_aluno, prova):
     """Sala de espera — aluno já está registrado, aguarda ativação."""
-    prova_atual = db.get_prova(prova['id'])
-
-    # Prova foi ativada enquanto jogava — redireciona automaticamente
-    if prova_atual['status'] == 'ativa':
-        st.success("🟢 A prova foi liberada! Entrando agora...")
-        time.sleep(1)
-        st.rerun()
-        return
 
     col_nome, col_status = st.columns([3, 1])
     with col_nome:
@@ -1449,15 +1441,13 @@ def _sala_espera(nome_aluno, prova):
     st.info(f"**{prova['titulo']}** — você já está registrado(a). "
             "Quando o professor liberar, a prova abrirá automaticamente.")
 
-    # Lê lista de jogos disponíveis
-    jogo_raw = prova_atual.get('jogo_espera', 'none') or 'none'
+    # Lê jogos disponíveis (usa cache da sessão para não rebuscar)
+    jogo_raw = prova.get('jogo_espera', 'none') or 'none'
     try:
         jogos_lista = json.loads(jogo_raw) if jogo_raw.startswith('[') else (
-            [] if jogo_raw == 'none' else [jogo_raw]
-        )
+            [] if jogo_raw == 'none' else [jogo_raw])
     except Exception:
         jogos_lista = []
-
     jogos_lista = [j for j in jogos_lista if j in JOGOS_DISPONIVEIS]
 
     if not jogos_lista:
@@ -1470,59 +1460,61 @@ def _sala_espera(nome_aluno, prova):
         </div>
         """, unsafe_allow_html=True)
     elif len(jogos_lista) == 1:
-        # Só um jogo — exibe direto
-        nome_jogo = JOGOS_DISPONIVEIS[jogos_lista[0]]
-        st.markdown(f"### {nome_jogo} 🎮")
-        st.caption("Aproveite enquanto aguarda — suas respostas não serão perdidas.")
+        st.markdown(f"### {JOGOS_DISPONIVEIS[jogos_lista[0]]} 🎮")
+        st.caption("Aproveite enquanto aguarda — a prova abrirá automaticamente.")
         render_jogo(jogos_lista[0], nome_aluno, altura=560)
     else:
-        # Múltiplos jogos — aluno escolhe via abas
         st.markdown("### 🎮 Escolha um jogo para jogar enquanto aguarda:")
-
-        # Botões de seleção de jogo
         jogo_key = f'jogo_sala_{nome_aluno}'
         if jogo_key not in st.session_state:
             st.session_state[jogo_key] = jogos_lista[0]
-
         cols = st.columns(len(jogos_lista))
         for ci, jkey in enumerate(jogos_lista):
-            nome_j = JOGOS_DISPONIVEIS[jkey]
             selecionado = st.session_state[jogo_key] == jkey
             with cols[ci]:
                 if st.button(
-                    f"{'▶️ ' if selecionado else ''}{nome_j}",
+                    f"{'▶️ ' if selecionado else ''}{JOGOS_DISPONIVEIS[jkey]}",
                     key=f"sel_jogo_{jkey}_{nome_aluno}",
                     use_container_width=True,
                     type="primary" if selecionado else "secondary"
                 ):
                     st.session_state[jogo_key] = jkey
                     st.rerun()
+        render_jogo(st.session_state[jogo_key], nome_aluno, altura=560)
 
-        jogo_ativo = st.session_state[jogo_key]
-        st.caption(f"Jogando: **{JOGOS_DISPONIVEIS[jogo_ativo]}** — "
-                   "seus dados na prova estão salvos.")
-        render_jogo(jogo_ativo, nome_aluno, altura=560)
-
-    # Verifica a cada 4s se a prova foi ativada
-    time.sleep(4)
-    st.rerun()
+    # ── Polling isolado em fragment — só esta parte faz rerun ─────────────────
+    # O jogo continua rodando, só o check de status é atualizado
+    try:
+        @st.fragment(run_every=8)
+        def _check_status_espera():
+            prova_check = db.get_prova_cached(prova['id'], ttl_seg=6)
+            if prova_check and prova_check['status'] == 'ativa':
+                st.success("🟢 A prova foi liberada! Entrando agora...")
+                time.sleep(1)
+                st.rerun()
+        _check_status_espera()
+    except (AttributeError, TypeError):
+        # Fallback Streamlit < 1.37
+        time.sleep(8)
+        prova_check = db.get_prova(prova['id'])
+        if prova_check and prova_check['status'] == 'ativa':
+            st.rerun()
+        else:
+            st.rerun()
 
 
 def _aguardar_nota(nome_aluno, prova_id):
     prova = db.get_prova(prova_id)
     sessao = db.get_sessao_por_aluno(prova_id, nome_aluno)
 
-    # Nota já liberada — vai para resultado
     if sessao and sessao['status'] == 'nota_liberada':
         st.rerun()
         return
 
-    # Mensagem de conclusão
     st.markdown(f"## ✅ Prova entregue, **{nome_aluno.split()[0].capitalize()}**!")
     st.success("Suas respostas foram salvas com sucesso. "
                "Aguarde o professor liberar o resultado.")
 
-    # Jogo de espera se houver
     jogo_raw = prova.get('jogo_espera', 'none') or 'none'
     try:
         jogos_lista = json.loads(jogo_raw) if jogo_raw.startswith('[') else (
@@ -1545,7 +1537,6 @@ def _aguardar_nota(nome_aluno, prova_id):
         st.caption("Jogue enquanto aguarda — sua nota aparecerá automaticamente.")
         render_jogo(jogos_lista[0], nome_aluno, altura=500)
     else:
-        st.markdown("### 🎮 Jogue enquanto aguarda sua nota:")
         jogo_key = f'jogo_nota_{nome_aluno}'
         if jogo_key not in st.session_state:
             st.session_state[jogo_key] = jogos_lista[0]
@@ -1563,9 +1554,17 @@ def _aguardar_nota(nome_aluno, prova_id):
                     st.rerun()
         render_jogo(st.session_state[jogo_key], nome_aluno, altura=500)
 
-    # Verifica a cada 4s se nota foi liberada
-    time.sleep(4)
-    st.rerun()
+    # Polling isolado em fragment
+    try:
+        @st.fragment(run_every=8)
+        def _check_nota():
+            s = db.get_sessao_por_aluno(prova_id, nome_aluno)
+            if s and s['status'] == 'nota_liberada':
+                st.rerun()
+        _check_nota()
+    except (AttributeError, TypeError):
+        time.sleep(8)
+        st.rerun()
 
 
 def _tela_resultado(sessao, prova):
@@ -1631,34 +1630,12 @@ def _tela_prova(sessao, prova):
     idx = max(0, min(idx, total_q - 1))
 
     # ─── HEADER ───────────────────────────────────────────────────────────────
-    col_nome, col_timer_ph, col_ocultar = st.columns([4, 2, 1])
-    with col_nome:
-        st.markdown(f"**{nome_aluno_display(sessao['nome_aluno'])}** — {prova['titulo']}")
-        st.markdown("""
-        <div style="font-size:.72rem; color:#198754; margin-top:-6px;">
-            💾 Respostas salvas automaticamente
-        </div>""", unsafe_allow_html=True)
-
-    with col_ocultar:
-        ocultar = st.checkbox("Ocultar ⏱️", value=st.session_state.get('ocultar_timer', False),
-                              key='ocultar_timer')
-
-    # Cronômetro em fragment isolado — rerun não afeta o resto da página
-    with col_timer_ph:
-        _intervalo = 1 if _rerun_delay == 1 else 2 if _rerun_delay == 2 else 5
-        try:
-            @st.fragment(run_every=_intervalo)
-            def _frag_timer():
-                s_atual = db.get_sessao(sessao_id)
-                p_atual = db.get_prova(prova_id)
-                if s_atual and p_atual:
-                    _cronometro(s_atual, p_atual)
-            _frag_timer()
-        except (AttributeError, TypeError):
-            # Streamlit < 1.37 — usa o cronômetro normal sem fragment
-            restante = _cronometro(sessao, prova)
-            st.session_state['_rerun_delay'] = (
-                1 if restante <= 35 else 2 if restante <= 65 else 5)
+    st.markdown(
+        f"**{nome_aluno_display(sessao['nome_aluno'])}** — {prova['titulo']}"
+        f'<span style="font-size:.72rem; color:#198754; margin-left:12px;">'
+        f'💾 Respostas salvas automaticamente</span>',
+        unsafe_allow_html=True
+    )
 
     # ─── BARRA DE PROGRESSO ───────────────────────────────────────────────────
     def _questao_respondida(qid):
@@ -1760,11 +1737,40 @@ def _tela_prova(sessao, prova):
                     st.session_state['questao_idx'] = ri
                     st.rerun()
 
-    # Fallback rerun para Streamlit < 1.37 (sem fragment)
-    if st.session_state.get('_rerun_delay'):
-        delay = st.session_state.pop('_rerun_delay')
-        time.sleep(delay)
-        st.rerun()
+    # ─── Fragment leve: só verifica se tempo esgotou (sem rerender da página) ──
+    try:
+        @st.fragment(run_every=30)
+        def _check_tempo():
+            s = db.get_sessao(sessao_id)
+            p = db.get_prova_cached(prova_id, ttl_seg=30)
+            if not s or not p:
+                return
+            iniciada = s.get('iniciada_em')
+            if not iniciada:
+                return
+            from datetime import datetime as _dt
+            try:
+                inicio = _dt.strptime(iniciada, '%Y-%m-%d %H:%M:%S')
+            except Exception:
+                return
+            tempo_total = (p['tempo_minutos'] + (s.get('tempo_extra_min') or 0)) * 60
+            decorrido = (_dt.now() - inicio).total_seconds()
+            decorrido -= (s.get('tempo_pausado_seg') or 0)
+            if s.get('pausado_em'):
+                try:
+                    paus = _dt.strptime(s['pausado_em'], '%Y-%m-%d %H:%M:%S')
+                    decorrido -= (_dt.now() - paus).total_seconds()
+                except Exception:
+                    pass
+            restante = tempo_total - decorrido
+            if restante <= 0 and s['status'] == 'em_andamento':
+                db.enviar_prova_aluno(sessao_id, motivo='tempo_esgotado')
+                st.rerun()
+            elif restante <= 60:
+                st.warning(f"⚠️ Atenção: menos de 1 minuto restante!")
+        _check_tempo()
+    except (AttributeError, TypeError):
+        pass
 
 
 def _resposta_vf(sessao_id, questao):
