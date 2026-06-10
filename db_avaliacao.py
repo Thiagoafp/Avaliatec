@@ -187,6 +187,29 @@ def get_prova(prova_id):
     return fetchone("SELECT * FROM provas WHERE id=?", [prova_id])
 
 
+# Cache leve para get_prova — evita rebuscar no Turso a cada rerun da sala de espera
+_cache_prova: dict = {}
+_cache_prova_ts: dict = {}
+
+def get_prova_cached(prova_id, ttl_seg=6):
+    """Versão cacheada de get_prova — usa cache por até ttl_seg segundos."""
+    import time as _t
+    agora = _t.time()
+    if (prova_id in _cache_prova and
+            agora - _cache_prova_ts.get(prova_id, 0) < ttl_seg):
+        return _cache_prova[prova_id]
+    prova = get_prova(prova_id)
+    _cache_prova[prova_id] = prova
+    _cache_prova_ts[prova_id] = agora
+    return prova
+
+
+def invalidar_cache_prova(prova_id):
+    """Chama após mudança de status para forçar releitura."""
+    _cache_prova.pop(prova_id, None)
+    _cache_prova_ts.pop(prova_id, None)
+
+
 def atualizar_config_prova(prova_id, ordem_aleatoria, alternativas_aleatorias,
                             navegacao_livre, jogo_espera='none'):
     ex("""UPDATE provas SET ordem_aleatoria=?, alternativas_aleatorias=?,
@@ -200,6 +223,7 @@ def atualizar_status_prova(prova_id, status):
     ex("""UPDATE provas SET status=?,
         atualizada_em=datetime('now','localtime') WHERE id=?""",
        [status, prova_id])
+    invalidar_cache_prova(prova_id)
 
 
 def deletar_prova(prova_id):
