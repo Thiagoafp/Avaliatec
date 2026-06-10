@@ -36,6 +36,8 @@ def _get_client() -> libsql_client.ClientSync:
             import streamlit as st
             url   = st.secrets["turso"]["url"]
             token = st.secrets["turso"]["token"]
+            # libsql_client precisa de https:// não libsql://
+            url = url.replace("libsql://", "https://")
             _client = libsql_client.create_client_sync(url=url, auth_token=token)
             return _client
         except Exception:
